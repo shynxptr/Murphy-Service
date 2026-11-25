@@ -28,6 +28,10 @@ import type {
   QuickContactGroup,
   Survey,
   SurveyResponse,
+  Tournament,
+  TournamentMode,
+  TournamentNotifSettings,
+  TournamentRegistration,
   WarningRecord,
 } from './types.js';
 
@@ -251,8 +255,40 @@ db.exec(`
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
 
+  CREATE TABLE IF NOT EXISTS tournaments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    title TEXT NOT NULL,
+    game TEXT NOT NULL DEFAULT 'Umum',
+    mode TEXT NOT NULL DEFAULT 'team',
+    max_slots INTEGER NOT NULL DEFAULT 16,
+    description TEXT NOT NULL DEFAULT '',
+    participant_role_id TEXT,
+    channel_id TEXT,
+    message_id TEXT,
+    is_open INTEGER NOT NULL DEFAULT 1,
+    created_by TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+
+  CREATE TABLE IF NOT EXISTS tournament_registrations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    tournament_id INTEGER NOT NULL REFERENCES tournaments(id) ON DELETE CASCADE,
+    captain_discord_id TEXT NOT NULL,
+    captain_username TEXT NOT NULL,
+    team_name TEXT NOT NULL,
+    representative_contact TEXT NOT NULL DEFAULT '',
+    roster_text TEXT NOT NULL DEFAULT '',
+    substitutes TEXT NOT NULL DEFAULT '',
+    notes TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'pending',
+    reject_reason TEXT NOT NULL DEFAULT '',
+    reviewed_by TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+
   CREATE INDEX IF NOT EXISTS idx_messages_conv ON messages(conversation_id);
   CREATE INDEX IF NOT EXISTS idx_anon_user_status ON anon_sessions(discord_user_id, status);
+  CREATE INDEX IF NOT EXISTS idx_trn_reg_tid ON tournament_registrations(tournament_id);
   CREATE INDEX IF NOT EXISTS idx_audit_action ON audit_logs(action);
   CREATE INDEX IF NOT EXISTS idx_warnings_target ON warnings(target_discord_id);
   CREATE INDEX IF NOT EXISTS idx_partners_pic ON partners(pic_discord_id);
@@ -1558,4 +1594,186 @@ export function listAnonMessages(sessionId: number, limit = 150): AnonMessage[] 
     )
     .all(sessionId, limit) as unknown as Array<Record<string, unknown>>;
   return rows.map(mapAnonMessageRow);
+}
+
+// ---- Tournaments & Registrations ----
+
+const defaultTournamentNotif: TournamentNotifSettings = {
+  announceChannelId: '',
+  sendDm: true,
+  approveMessage:
+    '🎉 Selamat! Pendaftaran **{tim}** untuk turnamen **{turnamen}** telah **DISETUJUI (APPROVED)** oleh Tim Humas. Silakan pantau info jadwal & technical meeting ya!',
+  rejectMessage:
+    'Mohon maaf, pendaftaran **{tim}** untuk turnamen **{turnamen}** belum dapat disetujui.\n**Alasan:** {alasan}\n\nSilakan perbaiki data dan daftar ulang jika slot masih tersedia.',
+};
+
+export function getTournamentNotifSettings(): TournamentNotifSettings {
+  const row = db
+    .prepare('SELECT value FROM settings WHERE key = ?')
+    .get('tournament_notif') as { value: string } | undefined;
+  if (!row) return defaultTournamentNotif;
+  try {
+    return { ...defaultTournamentNotif, ...JSON.parse(row.value) };
+  } catch {
+    return defaultTournamentNotif;
+  }
+}
+
+export function saveTournamentNotifSettings(
+  updates: Partial<TournamentNotifSettings>
+): TournamentNotifSettings {
+  const current = getTournamentNotifSettings();
+  const next: TournamentNotifSettings = {
+    announceChannelId:
+      updates.announceChannelId !== undefined
+        ? updates.announceChannelId.trim()
+        : current.announceChannelId,
+    sendDm: updates.sendDm !== undefined ? Boolean(updates.sendDm) : current.sendDm,
+    approveMessage:
+      updates.approveMessage !== undefined && updates.approveMessage.trim()
+        ? updates.approveMessage.trim()
+        : current.approveMessage,
+    rejectMessage:
+      updates.rejectMessage !== undefined && updates.rejectMessage.trim()
+        ? updates.rejectMessage.trim()
+        : current.rejectMessage,
+  };
+  db.prepare(
+    'INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value'
+  ).run('tournament_notif', JSON.stringify(next));
+  return next;
+}
+
+export function createTournament(data: {
+  title: string;
+  game: string;
+  mode: TournamentMode;
+  max_slots: number;
+  description?: string;
+  participant_role_id?: string | null;
+  created_by: string;
+}): Tournament {
+  const info = db
+    .prepare(
+      `INSERT INTO tournaments (title, game, mode, max_slots, description, participant_role_id, created_by)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(
+      data.title,
+      data.game,
+      data.mode,
+      data.max_slots,
+      data.description || '',
+      data.participant_role_id || null,
+      data.created_by
+    );
+  return getTournamentById(Number(info.lastInsertRowid))!;
+}
+
+export function getTournamentById(id: number): Tournament | undefined {
+  return db
+    .prepare(
+      `SELECT t.*,
+        (SELECT COUNT(*) FROM tournament_registrations r WHERE r.tournament_id = t.id AND r.status = 'approved') as approved_count,
+        (SELECT COUNT(*) FROM tournament_registrations r WHERE r.tournament_id = t.id AND r.status = 'pending') as pending_count
+       FROM tournaments t WHERE t.id = ?`
+    )
+    .get(id) as unknown as Tournament | undefined;
+}
+
+export function listTournaments(): Tournament[] {
+  return db
+    .prepare(
+      `SELECT t.*,
+        (SELECT COUNT(*) FROM tournament_registrations r WHERE r.tournament_id = t.id AND r.status = 'approved') as approved_count,
+        (SELECT COUNT(*) FROM tournament_registrations r WHERE r.tournament_id = t.id AND r.status = 'pending') as pending_count
+       FROM tournaments t ORDER BY t.id DESC`
+    )
+    .all() as unknown as Tournament[];
+}
+
+export function updateTournamentPanelMessage(
+  id: number,
+  channelId: string,
+  messageId: string
+): void {
+  db.prepare('UPDATE tournaments SET channel_id = ?, message_id = ? WHERE id = ?').run(
+    channelId,
+    messageId,
+    id
+  );
+}
+
+export function toggleTournamentOpen(id: number, isOpen: boolean): Tournament | undefined {
+  db.prepare('UPDATE tournaments SET is_open = ? WHERE id = ?').run(isOpen ? 1 : 0, id);
+  return getTournamentById(id);
+}
+
+export function deleteTournament(id: number): void {
+  db.prepare('DELETE FROM tournaments WHERE id = ?').run(id);
+}
+
+export function createTournamentRegistration(data: {
+  tournament_id: number;
+  captain_discord_id: string;
+  captain_username: string;
+  team_name: string;
+  representative_contact: string;
+  roster_text: string;
+  substitutes?: string;
+  notes?: string;
+}): TournamentRegistration {
+  const info = db
+    .prepare(
+      `INSERT INTO tournament_registrations (
+        tournament_id, captain_discord_id, captain_username,
+        team_name, representative_contact, roster_text, substitutes, notes
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(
+      data.tournament_id,
+      data.captain_discord_id,
+      data.captain_username,
+      data.team_name,
+      data.representative_contact,
+      data.roster_text,
+      data.substitutes || '',
+      data.notes || ''
+    );
+  return getTournamentRegistrationById(Number(info.lastInsertRowid))!;
+}
+
+export function getTournamentRegistrationById(id: number): TournamentRegistration | undefined {
+  return db
+    .prepare('SELECT * FROM tournament_registrations WHERE id = ?')
+    .get(id) as unknown as TournamentRegistration | undefined;
+}
+
+export function findExistingRegistration(
+  tournamentId: number,
+  captainDiscordId: string
+): TournamentRegistration | undefined {
+  return db
+    .prepare(
+      "SELECT * FROM tournament_registrations WHERE tournament_id = ? AND captain_discord_id = ? AND status != 'rejected' LIMIT 1"
+    )
+    .get(tournamentId, captainDiscordId) as unknown as TournamentRegistration | undefined;
+}
+
+export function listTournamentRegistrations(tournamentId: number): TournamentRegistration[] {
+  return db
+    .prepare('SELECT * FROM tournament_registrations WHERE tournament_id = ? ORDER BY id DESC')
+    .all(tournamentId) as unknown as TournamentRegistration[];
+}
+
+export function updateTournamentRegistrationStatus(
+  regId: number,
+  status: 'approved' | 'rejected' | 'pending',
+  reviewedBy: string,
+  rejectReason = ''
+): TournamentRegistration | undefined {
+  db.prepare(
+    'UPDATE tournament_registrations SET status = ?, reviewed_by = ?, reject_reason = ? WHERE id = ?'
+  ).run(status, reviewedBy, rejectReason, regId);
+  return getTournamentRegistrationById(regId);
 }

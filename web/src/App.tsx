@@ -15,6 +15,7 @@ import {
   Settings,
   Shield,
   ShieldCheck,
+  Trophy,
   X,
   Zap,
 } from 'lucide-react';
@@ -47,6 +48,9 @@ const CustomRolesView = lazy(() =>
 const EventsView = lazy(() =>
   import('./components/EventsView').then((m) => ({ default: m.EventsView }))
 );
+const TournamentsView = lazy(() =>
+  import('./components/TournamentsView').then((m) => ({ default: m.TournamentsView }))
+);
 const AspirationsView = lazy(() =>
   import('./components/AspirationsView').then((m) => ({ default: m.AspirationsView }))
 );
@@ -68,6 +72,7 @@ type Page =
   | 'channels'
   | 'partners'
   | 'customroles'
+  | 'tournaments'
   | 'events'
   | 'aspirations'
   | 'warnings'
@@ -178,6 +183,7 @@ export default function App() {
     { id: 'channels', label: 'Post Channel', icon: Hash },
     { id: 'partners', label: 'Partners', icon: Handshake },
     { id: 'customroles', label: 'Custom Roles', icon: Palette },
+    { id: 'tournaments', label: 'Turnamen', icon: Trophy },
     { id: 'events', label: 'Event & Survei', icon: Calendar },
     { id: 'aspirations', label: 'Aspirasi', icon: Lightbulb },
     { id: 'warnings', label: 'Warnings', icon: AlertTriangle },
@@ -341,6 +347,12 @@ export default function App() {
             />
           )}
           {page === 'customroles' && <CustomRolesView user={user} />}
+          {page === 'tournaments' && (
+            <TournamentsView
+              user={user}
+              onOpenChat={(id, name) => void handleOpenQuickChat(id, name)}
+            />
+          )}
           {page === 'events' && <EventsView />}
           {page === 'aspirations' && <AspirationsView />}
           {page === 'warnings' && <WarningsView user={user} />}

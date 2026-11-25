@@ -64,6 +64,10 @@ import {
   formatBytes,
   removeBackgroundBuffer,
 } from './imageTools.js';
+import {
+  handleTournamentInteraction,
+  handleTournamentNotifCommand,
+} from './tournaments.js';
 import type { Conversation, MessageAttachment } from './types.js';
 
 export const discordClient = new Client({
@@ -478,6 +482,40 @@ async function registerSlashCommands(): Promise<void> {
           .setMaxValue(1024)
           .setRequired(false)
       ),
+    new SlashCommandBuilder()
+      .setName('turnamen-notif')
+      .setDescription('Atur notifikasi Approve/Reject pendaftaran turnamen (Khusus Admin)')
+      .addChannelOption((opt) =>
+        opt
+          .setName('channel')
+          .setDescription('Channel tujuan pengumuman tim/peserta yang di-Approve')
+          .addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement)
+          .setRequired(false)
+      )
+      .addBooleanOption((opt) =>
+        opt
+          .setName('kirim_dm')
+          .setDescription('Kirim DM konfirmasi otomatis ke perwakilan/kapten?')
+          .setRequired(false)
+      )
+      .addStringOption((opt) =>
+        opt
+          .setName('pesan_approve')
+          .setDescription('Template pesan Approve (pakai {tim}, {turnamen}, {kapten})')
+          .setRequired(false)
+      )
+      .addStringOption((opt) =>
+        opt
+          .setName('pesan_reject')
+          .setDescription('Template pesan Reject (pakai {tim}, {turnamen}, {alasan})')
+          .setRequired(false)
+      )
+      .addBooleanOption((opt) =>
+        opt
+          .setName('matikan_channel')
+          .setDescription('Matikan notifikasi ke channel (hanya DM saja)')
+          .setRequired(false)
+      ),
   ].map((c) => c.toJSON());
 
   const rest = new REST({ version: '10' }).setToken(config.discordToken);
@@ -658,8 +696,18 @@ discordClient.on(Events.InteractionCreate, async (interaction: Interaction) => {
       return;
     }
 
+    // 0b. Tournament Registration interactions (trn_*)
+    if (await handleTournamentInteraction(interaction, sendInternalNotif)) {
+      return;
+    }
+
     // 1. Slash Commands
     if (interaction.isChatInputCommand()) {
+      if (interaction.commandName === 'turnamen-notif') {
+        await handleTournamentNotifCommand(interaction);
+        return;
+      }
+
       if (interaction.commandName === 'removebg') {
         await interaction.deferReply();
         const att = interaction.options.getAttachment('gambar', true);

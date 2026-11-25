@@ -250,3 +250,4 @@ export async function removeBackgroundBuffer(
 
   return { ...compressed, originalBytes, method: 'local' };
 }
+

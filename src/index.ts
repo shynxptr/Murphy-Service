@@ -25,6 +25,7 @@ import { customRolesRouter } from './routes/customRoles.js';
 import { partnersRouter } from './routes/partners.js';
 import { quickContactsRouter } from './routes/quickContacts.js';
 import { templatesRouter } from './routes/templates.js';
+import { tournamentsRouter } from './routes/tournaments.js';
 import { uploadsRouter } from './routes/uploads.js';
 import { warningsRouter } from './routes/warnings.js';
 
@@ -104,6 +105,7 @@ app.use('/api/conversations', conversationsRouter);
 app.use('/api/custom-roles', customRolesRouter);
 app.use('/api/partners', partnersRouter);
 app.use('/api/quick-contacts', quickContactsRouter);
+app.use('/api/tournaments', tournamentsRouter);
 app.use('/api/warnings', warningsRouter);
 app.use('/api/templates', templatesRouter);
 app.use('/api/community', communityRouter);

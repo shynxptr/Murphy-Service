@@ -277,3 +277,45 @@ export interface AnonMessage {
   attachments: MessageAttachment[];
   created_at: string;
 }
+
+export type TournamentMode = 'team' | 'solo';
+
+export interface TournamentNotifSettings {
+  announceChannelId: string;
+  sendDm: boolean;
+  approveMessage: string;
+  rejectMessage: string;
+}
+
+export interface Tournament {
+  id: number;
+  title: string;
+  game: string;
+  mode: TournamentMode;
+  max_slots: number;
+  description: string;
+  participant_role_id: string | null;
+  channel_id: string | null;
+  message_id: string | null;
+  is_open: number;
+  created_by: string;
+  created_at: string;
+  approved_count?: number;
+  pending_count?: number;
+}
+
+export interface TournamentRegistration {
+  id: number;
+  tournament_id: number;
+  captain_discord_id: string;
+  captain_username: string;
+  team_name: string;
+  representative_contact: string;
+  roster_text: string;
+  substitutes: string;
+  notes: string;
+  status: 'pending' | 'approved' | 'rejected';
+  reject_reason: string;
+  reviewed_by: string | null;
+  created_at: string;
+}
