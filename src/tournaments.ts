@@ -302,8 +302,8 @@ function buildRegistrationModal(trn: Tournament): ModalBuilder {
       new ActionRowBuilder<TextInputBuilder>().addComponents(
         new TextInputBuilder()
           .setCustomId('rep_contact')
-          .setLabel('Nama Perwakilan / Kapten & Kontak (WA/IG)')
-          .setPlaceholder('Contoh: Budi / 08123456789')
+          .setLabel('Username Discord Perwakilan / Kapten')
+          .setPlaceholder('Contoh: @budi_mlbb atau budi_mlbb')
           .setMaxLength(80)
           .setRequired(true)
           .setStyle(TextInputStyle.Short)
@@ -370,9 +370,10 @@ function buildRegistrationModal(trn: Tournament): ModalBuilder {
       new ActionRowBuilder<TextInputBuilder>().addComponents(
         new TextInputBuilder()
           .setCustomId('rep_contact')
-          .setLabel('Kontak (WA / IG Opsional)')
+          .setLabel('Username Discord Kamu')
+          .setPlaceholder('Contoh: @shynx atau shynx')
           .setMaxLength(80)
-          .setRequired(false)
+          .setRequired(true)
           .setStyle(TextInputStyle.Short)
       ),
       new ActionRowBuilder<TextInputBuilder>().addComponents(
@@ -806,7 +807,7 @@ export async function handleTournamentInteraction(
             .setTitle(`🏆 Pendaftar Turnamen Baru — ${trn.title}`)
             .setColor(0xf59e0b)
             .setDescription(
-              `**ID:** \`${reg.id}\`\n**${trn.mode === 'team' ? 'Tim' : 'Peserta'}:** ${reg.team_name}\n**Perwakilan:** ${interaction.user.username} (<@${interaction.user.id}>)\n**Kontak:** ${repContact || '-'}\n**Roster/ID:**\n\`\`\`\n${rosterText.slice(0, 600)}\n\`\`\`${subs ? `\n**Cadangan/Rank:** ${subs}` : ''}${notes ? `\n**Catatan:** ${notes}` : ''}`
+              `**ID:** \`${reg.id}\`\n**${trn.mode === 'team' ? 'Tim' : 'Peserta'}:** ${reg.team_name}\n**Perwakilan:** ${interaction.user.username} (<@${interaction.user.id}>)\n**Username Discord:** ${repContact || '-'}\n**Roster/ID:**\n\`\`\`\n${rosterText.slice(0, 600)}\n\`\`\`${subs ? `\n**Cadangan/Rank:** ${subs}` : ''}${notes ? `\n**Catatan:** ${notes}` : ''}`
             )
             .setTimestamp();
           const btnRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
