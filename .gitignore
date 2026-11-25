@@ -6,4 +6,5 @@ web/dist/
 data/
 uploads/
 *.log
+*.tsbuildinfo
 .DS_Store
