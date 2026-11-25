@@ -65,6 +65,8 @@ import {
   removeBackgroundBuffer,
 } from './imageTools.js';
 import {
+  handleTournamentDaftarAutocomplete,
+  handleTournamentDaftarCommand,
   handleTournamentInteraction,
   handleTournamentNotifCommand,
 } from './tournaments.js';
@@ -516,6 +518,16 @@ async function registerSlashCommands(): Promise<void> {
           .setDescription('Matikan notifikasi ke channel (hanya DM saja)')
           .setRequired(false)
       ),
+    new SlashCommandBuilder()
+      .setName('daftar')
+      .setDescription('Daftar turnamen aktif melalui form Modal Discord')
+      .addStringOption((opt) =>
+        opt
+          .setName('turnamen')
+          .setDescription('Pilih turnamen (kosongkan jika hanya ada 1 turnamen aktif)')
+          .setAutocomplete(true)
+          .setRequired(false)
+      ),
   ].map((c) => c.toJSON());
 
   const rest = new REST({ version: '10' }).setToken(config.discordToken);
@@ -701,8 +713,19 @@ discordClient.on(Events.InteractionCreate, async (interaction: Interaction) => {
       return;
     }
 
+    // 0c. Autocomplete (/daftar)
+    if (interaction.isAutocomplete() && interaction.commandName === 'daftar') {
+      await handleTournamentDaftarAutocomplete(interaction);
+      return;
+    }
+
     // 1. Slash Commands
     if (interaction.isChatInputCommand()) {
+      if (interaction.commandName === 'daftar') {
+        await handleTournamentDaftarCommand(interaction);
+        return;
+      }
+
       if (interaction.commandName === 'turnamen-notif') {
         await handleTournamentNotifCommand(interaction);
         return;

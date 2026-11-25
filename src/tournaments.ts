@@ -8,6 +8,7 @@ import {
   PermissionFlagsBits,
   TextInputBuilder,
   TextInputStyle,
+  type AutocompleteInteraction,
   type ChatInputCommandInteraction,
   type Client,
   type Interaction,
@@ -19,6 +20,7 @@ import {
   getTournamentById,
   getTournamentNotifSettings,
   listTournamentRegistrations,
+  listTournaments,
   saveTournamentNotifSettings,
   updateTournamentPanelMessage,
 } from './db.js';
@@ -277,6 +279,187 @@ export async function handleTournamentNotifCommand(
   await interaction.reply({ embeds: [embed], ephemeral: true });
 }
 
+function buildRegistrationModal(trn: Tournament): ModalBuilder {
+  const modal = new ModalBuilder()
+    .setCustomId(`trn_modal_${trn.id}`)
+    .setTitle(`Daftar: ${trn.title}`.slice(0, 45));
+
+  if (trn.mode === 'team') {
+    modal.addComponents(
+      new ActionRowBuilder<TextInputBuilder>().addComponents(
+        new TextInputBuilder()
+          .setCustomId('team_name')
+          .setLabel('Nama Tim')
+          .setPlaceholder('Contoh: Murphy Esports')
+          .setMaxLength(60)
+          .setRequired(true)
+          .setStyle(TextInputStyle.Short)
+      ),
+      new ActionRowBuilder<TextInputBuilder>().addComponents(
+        new TextInputBuilder()
+          .setCustomId('rep_contact')
+          .setLabel('Nama Perwakilan / Kapten & Kontak (WA/IG)')
+          .setPlaceholder('Contoh: Budi / 08123456789')
+          .setMaxLength(80)
+          .setRequired(true)
+          .setStyle(TextInputStyle.Short)
+      ),
+      new ActionRowBuilder<TextInputBuilder>().addComponents(
+        new TextInputBuilder()
+          .setCustomId('roster')
+          .setLabel('Daftar Member / Roster (Nick + ID Game)')
+          .setPlaceholder(
+            '1. Nick1 (ID/RiotID)\n2. Nick2 (ID/RiotID)\n3. Nick3 (ID)\n4. Nick4 (ID)\n5. Nick5 (ID)'
+          )
+          .setMaxLength(800)
+          .setRequired(true)
+          .setStyle(TextInputStyle.Paragraph)
+      ),
+      new ActionRowBuilder<TextInputBuilder>().addComponents(
+        new TextInputBuilder()
+          .setCustomId('subs')
+          .setLabel('Pemain Cadangan (Opsional)')
+          .setPlaceholder('Contoh: Nick6 (ID) - kosongkan jika tidak ada')
+          .setMaxLength(200)
+          .setRequired(false)
+          .setStyle(TextInputStyle.Short)
+      ),
+      new ActionRowBuilder<TextInputBuilder>().addComponents(
+        new TextInputBuilder()
+          .setCustomId('notes')
+          .setLabel('Catatan Tambahan (Opsional)')
+          .setPlaceholder('Misal: Tag Discord anggota atau info lainnya')
+          .setMaxLength(200)
+          .setRequired(false)
+          .setStyle(TextInputStyle.Short)
+      )
+    );
+  } else {
+    modal.addComponents(
+      new ActionRowBuilder<TextInputBuilder>().addComponents(
+        new TextInputBuilder()
+          .setCustomId('team_name')
+          .setLabel('Nickname In-Game')
+          .setPlaceholder('Contoh: Shynx#1234')
+          .setMaxLength(60)
+          .setRequired(true)
+          .setStyle(TextInputStyle.Short)
+      ),
+      new ActionRowBuilder<TextInputBuilder>().addComponents(
+        new TextInputBuilder()
+          .setCustomId('roster')
+          .setLabel('ID Game / Riot ID / Server')
+          .setPlaceholder('Contoh: 12345678 (2024)')
+          .setMaxLength(150)
+          .setRequired(true)
+          .setStyle(TextInputStyle.Short)
+      ),
+      new ActionRowBuilder<TextInputBuilder>().addComponents(
+        new TextInputBuilder()
+          .setCustomId('subs')
+          .setLabel('Rank / Tier Saat Ini (Opsional)')
+          .setPlaceholder('Contoh: Mythic / Ascendant')
+          .setMaxLength(60)
+          .setRequired(false)
+          .setStyle(TextInputStyle.Short)
+      ),
+      new ActionRowBuilder<TextInputBuilder>().addComponents(
+        new TextInputBuilder()
+          .setCustomId('rep_contact')
+          .setLabel('Kontak (WA / IG Opsional)')
+          .setMaxLength(80)
+          .setRequired(false)
+          .setStyle(TextInputStyle.Short)
+      ),
+      new ActionRowBuilder<TextInputBuilder>().addComponents(
+        new TextInputBuilder()
+          .setCustomId('notes')
+          .setLabel('Catatan Tambahan (Opsional)')
+          .setMaxLength(200)
+          .setRequired(false)
+          .setStyle(TextInputStyle.Short)
+      )
+    );
+  }
+
+  return modal;
+}
+
+export async function handleTournamentDaftarAutocomplete(
+  interaction: AutocompleteInteraction
+): Promise<void> {
+  const query = interaction.options.getFocused().toLowerCase();
+  const openList = listTournaments().filter((t) => t.is_open === 1);
+  const choices = openList
+    .filter(
+      (t) =>
+        t.title.toLowerCase().includes(query) ||
+        t.game.toLowerCase().includes(query)
+    )
+    .slice(0, 25)
+    .map((t) => ({
+      name: `${t.title} (${t.game} • ${t.approved_count || 0}/${t.max_slots})`.slice(0, 100),
+      value: String(t.id),
+    }));
+  await interaction.respond(choices);
+}
+
+export async function handleTournamentDaftarCommand(
+  interaction: ChatInputCommandInteraction
+): Promise<void> {
+  const rawId = interaction.options.getString('turnamen');
+  const openList = listTournaments().filter((t) => t.is_open === 1);
+
+  if (openList.length === 0) {
+    await interaction.reply({
+      content: '🔒 Saat ini belum ada turnamen yang sedang membuka pendaftaran.',
+      ephemeral: true,
+    });
+    return;
+  }
+
+  let trn: Tournament | undefined;
+  if (rawId) {
+    trn = getTournamentById(Number(rawId));
+  } else if (openList.length === 1) {
+    trn = openList[0];
+  } else {
+    const listText = openList
+      .map((t) => `• **${t.title}** (${t.game} • ${t.approved_count || 0}/${t.max_slots})`)
+      .join('\n');
+    await interaction.reply({
+      content: `Ada beberapa turnamen yang sedang dibuka. Jalankan \`/daftar\` lalu pilih nama turnamennya:\n\n${listText}`,
+      ephemeral: true,
+    });
+    return;
+  }
+
+  if (!trn || trn.is_open === 0) {
+    await interaction.reply({
+      content: '🔒 Pendaftaran turnamen tersebut tidak ditemukan atau sudah ditutup.',
+      ephemeral: true,
+    });
+    return;
+  }
+  if ((trn.approved_count || 0) >= trn.max_slots) {
+    await interaction.reply({
+      content: `⚠️ Slot turnamen **${trn.title}** sudah penuh (${trn.max_slots}/${trn.max_slots}).`,
+      ephemeral: true,
+    });
+    return;
+  }
+  const existing = findExistingRegistration(trn.id, interaction.user.id);
+  if (existing) {
+    await interaction.reply({
+      content: `ℹ️ Kamu sudah mendaftar di **${trn.title}** sebagai **${existing.team_name}** (Status: **${existing.status.toUpperCase()}**).`,
+      ephemeral: true,
+    });
+    return;
+  }
+
+  await interaction.showModal(buildRegistrationModal(trn));
+}
+
 // Handle buttons (trn_register_<id>, trn_list_<id>) and modal submit (trn_modal_<id>)
 export async function handleTournamentInteraction(
   interaction: Interaction,
@@ -331,107 +514,7 @@ export async function handleTournamentInteraction(
       return true;
     }
 
-    const modal = new ModalBuilder()
-      .setCustomId(`trn_modal_${trnId}`)
-      .setTitle(`Daftar: ${trn.title}`.slice(0, 45));
-
-    if (trn.mode === 'team') {
-      modal.addComponents(
-        new ActionRowBuilder<TextInputBuilder>().addComponents(
-          new TextInputBuilder()
-            .setCustomId('team_name')
-            .setLabel('Nama Tim')
-            .setPlaceholder('Contoh: Murphy Esports')
-            .setMaxLength(60)
-            .setRequired(true)
-            .setStyle(TextInputStyle.Short)
-        ),
-        new ActionRowBuilder<TextInputBuilder>().addComponents(
-          new TextInputBuilder()
-            .setCustomId('rep_contact')
-            .setLabel('Nama Perwakilan / Kapten & Kontak (WA/IG)')
-            .setPlaceholder('Contoh: Budi / 08123456789')
-            .setMaxLength(80)
-            .setRequired(true)
-            .setStyle(TextInputStyle.Short)
-        ),
-        new ActionRowBuilder<TextInputBuilder>().addComponents(
-          new TextInputBuilder()
-            .setCustomId('roster')
-            .setLabel('Daftar Member / Roster (Nick + ID Game)')
-            .setPlaceholder('1. Nick1 (ID/RiotID)\n2. Nick2 (ID/RiotID)\n3. Nick3 (ID)\n4. Nick4 (ID)\n5. Nick5 (ID)')
-            .setMaxLength(800)
-            .setRequired(true)
-            .setStyle(TextInputStyle.Paragraph)
-        ),
-        new ActionRowBuilder<TextInputBuilder>().addComponents(
-          new TextInputBuilder()
-            .setCustomId('subs')
-            .setLabel('Pemain Cadangan (Opsional)')
-            .setPlaceholder('Contoh: Nick6 (ID) - kosongkan jika tidak ada')
-            .setMaxLength(200)
-            .setRequired(false)
-            .setStyle(TextInputStyle.Short)
-        ),
-        new ActionRowBuilder<TextInputBuilder>().addComponents(
-          new TextInputBuilder()
-            .setCustomId('notes')
-            .setLabel('Catatan Tambahan (Opsional)')
-            .setPlaceholder('Misal: Tag Discord anggota atau info lainnya')
-            .setMaxLength(200)
-            .setRequired(false)
-            .setStyle(TextInputStyle.Short)
-        )
-      );
-    } else {
-      modal.addComponents(
-        new ActionRowBuilder<TextInputBuilder>().addComponents(
-          new TextInputBuilder()
-            .setCustomId('team_name')
-            .setLabel('Nickname In-Game')
-            .setPlaceholder('Contoh: Shynx#1234')
-            .setMaxLength(60)
-            .setRequired(true)
-            .setStyle(TextInputStyle.Short)
-        ),
-        new ActionRowBuilder<TextInputBuilder>().addComponents(
-          new TextInputBuilder()
-            .setCustomId('roster')
-            .setLabel('ID Game / Riot ID / Server')
-            .setPlaceholder('Contoh: 12345678 (2024)')
-            .setMaxLength(150)
-            .setRequired(true)
-            .setStyle(TextInputStyle.Short)
-        ),
-        new ActionRowBuilder<TextInputBuilder>().addComponents(
-          new TextInputBuilder()
-            .setCustomId('subs')
-            .setLabel('Rank / Tier Saat Ini (Opsional)')
-            .setPlaceholder('Contoh: Mythic / Ascendant')
-            .setMaxLength(60)
-            .setRequired(false)
-            .setStyle(TextInputStyle.Short)
-        ),
-        new ActionRowBuilder<TextInputBuilder>().addComponents(
-          new TextInputBuilder()
-            .setCustomId('rep_contact')
-            .setLabel('Kontak (WA / IG Opsional)')
-            .setMaxLength(80)
-            .setRequired(false)
-            .setStyle(TextInputStyle.Short)
-        ),
-        new ActionRowBuilder<TextInputBuilder>().addComponents(
-          new TextInputBuilder()
-            .setCustomId('notes')
-            .setLabel('Catatan Tambahan (Opsional)')
-            .setMaxLength(200)
-            .setRequired(false)
-            .setStyle(TextInputStyle.Short)
-        )
-      );
-    }
-
-    await interaction.showModal(modal);
+    await interaction.showModal(buildRegistrationModal(trn));
     return true;
   }
 
@@ -484,3 +567,4 @@ export async function handleTournamentInteraction(
 
   return false;
 }
+
