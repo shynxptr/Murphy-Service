@@ -15,17 +15,21 @@ import {
 } from 'discord.js';
 import { config } from './config.js';
 import {
+  createTournament,
   createTournamentRegistration,
   findExistingRegistration,
   getTournamentById,
   getTournamentNotifSettings,
+  getTournamentRegistrationById,
   listTournamentRegistrations,
   listTournaments,
   saveTournamentNotifSettings,
+  toggleTournamentOpen,
   updateTournamentPanelMessage,
+  updateTournamentRegistrationStatus,
 } from './db.js';
 import { emitNotification } from './realtime.js';
-import type { Tournament, TournamentRegistration } from './types.js';
+import type { Tournament, TournamentMode, TournamentRegistration } from './types.js';
 
 export function buildTournamentPanelPayload(trn: Tournament) {
   const approved = trn.approved_count || 0;
@@ -460,6 +464,180 @@ export async function handleTournamentDaftarCommand(
   await interaction.showModal(buildRegistrationModal(trn));
 }
 
+// Autocomplete for /turnamen admin subcommands
+export async function handleTournamentAdminAutocomplete(
+  interaction: AutocompleteInteraction
+): Promise<void> {
+  const query = interaction.options.getFocused().toLowerCase();
+  const list = listTournaments();
+  const choices = list
+    .filter(
+      (t) =>
+        t.title.toLowerCase().includes(query) ||
+        t.game.toLowerCase().includes(query) ||
+        String(t.id) === query
+    )
+    .slice(0, 25)
+    .map((t) => ({
+      name: `#${t.id} ${t.title} (${t.is_open ? 'Buka' : 'Tutup'} • ${t.approved_count || 0}/${t.max_slots})`.slice(0, 100),
+      value: String(t.id),
+    }));
+  await interaction.respond(choices);
+}
+
+// Slash command /turnamen <buat|post|buka|tutup|peserta|approve|reject> (Admin Manage Server)
+export async function handleTournamentAdminCommand(
+  interaction: ChatInputCommandInteraction
+): Promise<void> {
+  if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
+    await interaction.reply({
+      content: '❌ Command `/turnamen` hanya bisa digunakan oleh Admin (Manage Server).',
+      ephemeral: true,
+    });
+    return;
+  }
+
+  const sub = interaction.options.getSubcommand();
+
+  if (sub === 'buat') {
+    const title = interaction.options.getString('nama', true).trim();
+    const game = interaction.options.getString('game', true).trim();
+    const mode = (interaction.options.getString('mode') as TournamentMode | null) || 'team';
+    const maxSlots = interaction.options.getInteger('slot') ?? 16;
+    const description = interaction.options.getString('deskripsi')?.trim() || '';
+    const role = interaction.options.getRole('role_peserta');
+    const channel = interaction.options.getChannel('channel');
+
+    const trn = createTournament({
+      title,
+      game,
+      mode,
+      max_slots: maxSlots,
+      description,
+      participant_role_id: role?.id || null,
+      created_by: interaction.user.username,
+    });
+
+    let postInfo = 'Gunakan `/turnamen post` untuk mengirim panel tombol pendaftaran ke channel.';
+    if (channel) {
+      try {
+        await postTournamentPanelToChannel(interaction.client, trn.id, channel.id);
+        postInfo = `Panel tombol pendaftaran otomatis dikirim ke <#${channel.id}>!`;
+      } catch (err) {
+        postInfo = `⚠️ Turnamen dibuat, tapi gagal post panel ke <#${channel.id}>: ${
+          err instanceof Error ? err.message : 'Error'
+        }`;
+      }
+    }
+
+    await interaction.reply({
+      content: `✅ Turnamen **${trn.title}** (#${trn.id} • ${trn.game} • Mode ${
+        trn.mode === 'team' ? 'Tim' : 'Solo'
+      } • ${trn.max_slots} slot) berhasil dibuat!\n${postInfo}`,
+      ephemeral: true,
+    });
+    return;
+  }
+
+  if (sub === 'post') {
+    const trnId = Number(interaction.options.getString('turnamen', true));
+    const channel = interaction.options.getChannel('channel') || interaction.channel;
+    if (!channel) {
+      await interaction.reply({ content: '❌ Channel tidak valid.', ephemeral: true });
+      return;
+    }
+    try {
+      await postTournamentPanelToChannel(interaction.client, trnId, channel.id);
+      await interaction.reply({
+        content: `✅ Panel pendaftaran turnamen berhasil dikirim ke <#${channel.id}>!`,
+        ephemeral: true,
+      });
+    } catch (err) {
+      await interaction.reply({
+        content: `❌ Gagal post panel: ${err instanceof Error ? err.message : 'Error'}`,
+        ephemeral: true,
+      });
+    }
+    return;
+  }
+
+  if (sub === 'buka' || sub === 'tutup') {
+    const trnId = Number(interaction.options.getString('turnamen', true));
+    const updated = toggleTournamentOpen(trnId, sub === 'buka');
+    if (!updated) {
+      await interaction.reply({ content: '❌ Turnamen tidak ditemukan.', ephemeral: true });
+      return;
+    }
+    await refreshTournamentPanelMessage(interaction.client, trnId);
+    await interaction.reply({
+      content:
+        sub === 'buka'
+          ? `🔓 Pendaftaran **${updated.title}** kembali **DIBUKA**.`
+          : `🔒 Pendaftaran **${updated.title}** telah **DITUTUP**.`,
+      ephemeral: true,
+    });
+    return;
+  }
+
+  if (sub === 'peserta') {
+    const trnId = Number(interaction.options.getString('turnamen', true));
+    const trn = getTournamentById(trnId);
+    if (!trn) {
+      await interaction.reply({ content: '❌ Turnamen tidak ditemukan.', ephemeral: true });
+      return;
+    }
+    const regs = listTournamentRegistrations(trnId);
+    if (regs.length === 0) {
+      await interaction.reply({
+        content: `ℹ️ Belum ada pendaftar di **${trn.title}**.`,
+        ephemeral: true,
+      });
+      return;
+    }
+    const lines = regs.slice(0, 20).map((r) => {
+      const icon = r.status === 'approved' ? '✅' : r.status === 'rejected' ? '❌' : '⏳';
+      return `${icon} \`ID:${r.id}\` **${r.team_name}** — <@${r.captain_discord_id}> (${r.status})`;
+    });
+    const embed = new EmbedBuilder()
+      .setTitle(`📋 Pendaftar — ${trn.title}`)
+      .setColor(0x6366f1)
+      .setDescription(lines.join('\n'))
+      .setFooter({ text: 'Gunakan /turnamen approve id:<ID> atau /turnamen reject id:<ID>' });
+    await interaction.reply({ embeds: [embed], ephemeral: true });
+    return;
+  }
+
+  if (sub === 'approve' || sub === 'reject') {
+    const regId = interaction.options.getInteger('id', true);
+    const alasan = interaction.options.getString('alasan')?.trim() || '';
+    const reg = getTournamentRegistrationById(regId);
+    if (!reg) {
+      await interaction.reply({ content: `❌ Pendaftaran dengan ID \`${regId}\` tidak ditemukan.`, ephemeral: true });
+      return;
+    }
+    const trn = getTournamentById(reg.tournament_id);
+    if (!trn) {
+      await interaction.reply({ content: '❌ Turnamen tidak ditemukan.', ephemeral: true });
+      return;
+    }
+    const decision = sub === 'approve' ? 'approved' : 'rejected';
+    const updated = updateTournamentRegistrationStatus(
+      regId,
+      decision,
+      interaction.user.username,
+      decision === 'rejected' ? alasan : ''
+    )!;
+    const fx = await handleRegistrationDecisionEffects(interaction.client, trn, updated, decision);
+    await interaction.reply({
+      content:
+        decision === 'approved'
+          ? `✅ **${updated.team_name}** berhasil di-**APPROVE** di **${trn.title}**! (DM: ${fx.dmSent ? 'Terkirim' : 'Gagal/Off'} • Channel Notif: ${fx.channelNotified ? 'Terkirim' : 'Off'})`
+          : `❌ **${updated.team_name}** telah di-**REJECT** (Alasan: ${alasan || '-'}).`,
+      ephemeral: true,
+    });
+  }
+}
+
 // Handle buttons (trn_register_<id>, trn_list_<id>) and modal submit (trn_modal_<id>)
 export async function handleTournamentInteraction(
   interaction: Interaction,
@@ -468,6 +646,70 @@ export async function handleTournamentInteraction(
   if (!interaction.isButton() && !interaction.isModalSubmit()) return false;
   const customId = interaction.customId || '';
   if (!customId.startsWith('trn_')) return false;
+
+  // ---- ADMIN QUICK APPROVE / REJECT BUTTONS IN #humas-notif ----
+  if (interaction.isButton() && customId.startsWith('trn_adm_approve_')) {
+    if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
+      await interaction.reply({ content: '❌ Khusus Admin (Manage Server).', ephemeral: true });
+      return true;
+    }
+    const regId = Number(customId.replace('trn_adm_approve_', ''));
+    const reg = getTournamentRegistrationById(regId);
+    const trn = reg ? getTournamentById(reg.tournament_id) : undefined;
+    if (!reg || !trn) {
+      await interaction.reply({ content: '❌ Data pendaftaran tidak ditemukan.', ephemeral: true });
+      return true;
+    }
+    const updated = updateTournamentRegistrationStatus(regId, 'approved', interaction.user.username)!;
+    await handleRegistrationDecisionEffects(interaction.client, trn, updated, 'approved');
+    await interaction.update({
+      content: `✅ **APPROVED** oleh <@${interaction.user.id}> — **${updated.team_name}** (${trn.title})`,
+      components: [],
+    });
+    return true;
+  }
+
+  if (interaction.isButton() && customId.startsWith('trn_adm_reject_')) {
+    if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
+      await interaction.reply({ content: '❌ Khusus Admin (Manage Server).', ephemeral: true });
+      return true;
+    }
+    const regId = Number(customId.replace('trn_adm_reject_', ''));
+    const modal = new ModalBuilder()
+      .setCustomId(`trn_adm_reject_modal_${regId}`)
+      .setTitle('Tolak Pendaftaran Turnamen')
+      .addComponents(
+        new ActionRowBuilder<TextInputBuilder>().addComponents(
+          new TextInputBuilder()
+            .setCustomId('reason')
+            .setLabel('Alasan Penolakan')
+            .setPlaceholder('Misal: ID game kurang lengkap')
+            .setMaxLength(200)
+            .setRequired(true)
+            .setStyle(TextInputStyle.Short)
+        )
+      );
+    await interaction.showModal(modal);
+    return true;
+  }
+
+  if (interaction.isModalSubmit() && customId.startsWith('trn_adm_reject_modal_')) {
+    const regId = Number(customId.replace('trn_adm_reject_modal_', ''));
+    const reason = interaction.fields.getTextInputValue('reason').trim();
+    const reg = getTournamentRegistrationById(regId);
+    const trn = reg ? getTournamentById(reg.tournament_id) : undefined;
+    if (!reg || !trn) {
+      await interaction.reply({ content: '❌ Data pendaftaran tidak ditemukan.', ephemeral: true });
+      return true;
+    }
+    const updated = updateTournamentRegistrationStatus(regId, 'rejected', interaction.user.username, reason)!;
+    await handleRegistrationDecisionEffects(interaction.client, trn, updated, 'rejected');
+    await interaction.reply({
+      content: `❌ **${updated.team_name}** ditolak oleh <@${interaction.user.id}> (Alasan: ${reason}).`,
+      ephemeral: true,
+    });
+    return true;
+  }
 
   // ---- BUTTON: LIHAT PESERTA ----
   if (interaction.isButton() && customId.startsWith('trn_list_')) {
@@ -555,11 +797,40 @@ export async function handleTournamentInteraction(
       body: `${reg.team_name} (Perwakilan: ${interaction.user.username})`,
     });
 
-    await sendInternalNotif(
-      `🏆 Pendaftar Turnamen Baru — ${trn.title}`,
-      `**${trn.mode === 'team' ? 'Tim' : 'Peserta'}:** ${reg.team_name}\n**Perwakilan:** ${interaction.user.username} (<@${interaction.user.id}>)\n**Kontak:** ${repContact || '-'}\n**Roster/ID:**\n${rosterText.slice(0, 400)}`,
-      config.webBaseUrl
-    );
+    // Send to #humas-notif with 1-click Approve/Reject buttons if configured
+    if (config.notifChannelId) {
+      try {
+        const ch = await interaction.client.channels.fetch(config.notifChannelId);
+        if (ch && ch.isTextBased() && 'send' in ch) {
+          const notifEmbed = new EmbedBuilder()
+            .setTitle(`🏆 Pendaftar Turnamen Baru — ${trn.title}`)
+            .setColor(0xf59e0b)
+            .setDescription(
+              `**ID:** \`${reg.id}\`\n**${trn.mode === 'team' ? 'Tim' : 'Peserta'}:** ${reg.team_name}\n**Perwakilan:** ${interaction.user.username} (<@${interaction.user.id}>)\n**Kontak:** ${repContact || '-'}\n**Roster/ID:**\n\`\`\`\n${rosterText.slice(0, 600)}\n\`\`\`${subs ? `\n**Cadangan/Rank:** ${subs}` : ''}${notes ? `\n**Catatan:** ${notes}` : ''}`
+            )
+            .setTimestamp();
+          const btnRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
+            new ButtonBuilder()
+              .setCustomId(`trn_adm_approve_${reg.id}`)
+              .setLabel('Approve')
+              .setEmoji('✅')
+              .setStyle(ButtonStyle.Success),
+            new ButtonBuilder()
+              .setCustomId(`trn_adm_reject_${reg.id}`)
+              .setLabel('Reject')
+              .setEmoji('❌')
+              .setStyle(ButtonStyle.Danger)
+          );
+          await ch.send({ embeds: [notifEmbed], components: [btnRow] });
+        }
+      } catch {
+        await sendInternalNotif(
+          `🏆 Pendaftar Turnamen Baru — ${trn.title}`,
+          `**${trn.mode === 'team' ? 'Tim' : 'Peserta'}:** ${reg.team_name}\n**Perwakilan:** ${interaction.user.username} (<@${interaction.user.id}>)`,
+          config.webBaseUrl
+        );
+      }
+    }
 
     await refreshTournamentPanelMessage(interaction.client, trnId);
     return true;

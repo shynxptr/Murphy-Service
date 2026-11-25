@@ -65,6 +65,8 @@ import {
   removeBackgroundBuffer,
 } from './imageTools.js';
 import {
+  handleTournamentAdminAutocomplete,
+  handleTournamentAdminCommand,
   handleTournamentDaftarAutocomplete,
   handleTournamentDaftarCommand,
   handleTournamentInteraction,
@@ -528,6 +530,81 @@ async function registerSlashCommands(): Promise<void> {
           .setAutocomplete(true)
           .setRequired(false)
       ),
+    new SlashCommandBuilder()
+      .setName('turnamen')
+      .setDescription('Kelola pendaftaran turnamen langsung dari Discord (Khusus Admin)')
+      .addSubcommand((sub) =>
+        sub
+          .setName('buat')
+          .setDescription('Buat turnamen baru')
+          .addStringOption((o) => o.setName('nama').setDescription('Nama turnamen').setRequired(true))
+          .addStringOption((o) => o.setName('game').setDescription('Nama game (MLBB/Valorant/dll)').setRequired(true))
+          .addStringOption((o) =>
+            o
+              .setName('mode')
+              .setDescription('Mode pendaftaran (default: Tim)')
+              .addChoices({ name: 'Tim / Squad', value: 'team' }, { name: 'Solo / Individu', value: 'solo' })
+              .setRequired(false)
+          )
+          .addIntegerOption((o) =>
+            o.setName('slot').setDescription('Kuota maksimal slot (default: 16)').setMinValue(2).setMaxValue(512).setRequired(false)
+          )
+          .addChannelOption((o) =>
+            o
+              .setName('channel')
+              .setDescription('Langsung post panel tombol daftar ke channel ini (opsional)')
+              .addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement)
+              .setRequired(false)
+          )
+          .addRoleOption((o) =>
+            o.setName('role_peserta').setDescription('Role yang otomatis diberikan saat di-Approve (opsional)').setRequired(false)
+          )
+          .addStringOption((o) => o.setName('deskripsi').setDescription('Info jadwal / hadiah (opsional)').setRequired(false))
+      )
+      .addSubcommand((sub) =>
+        sub
+          .setName('post')
+          .setDescription('Post panel tombol pendaftaran turnamen ke channel')
+          .addStringOption((o) => o.setName('turnamen').setDescription('Pilih turnamen').setAutocomplete(true).setRequired(true))
+          .addChannelOption((o) =>
+            o
+              .setName('channel')
+              .setDescription('Channel tujuan (default: channel saat ini)')
+              .addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement)
+              .setRequired(false)
+          )
+      )
+      .addSubcommand((sub) =>
+        sub
+          .setName('buka')
+          .setDescription('Buka kembali pendaftaran turnamen')
+          .addStringOption((o) => o.setName('turnamen').setDescription('Pilih turnamen').setAutocomplete(true).setRequired(true))
+      )
+      .addSubcommand((sub) =>
+        sub
+          .setName('tutup')
+          .setDescription('Tutup pendaftaran turnamen')
+          .addStringOption((o) => o.setName('turnamen').setDescription('Pilih turnamen').setAutocomplete(true).setRequired(true))
+      )
+      .addSubcommand((sub) =>
+        sub
+          .setName('peserta')
+          .setDescription('Lihat daftar pendaftar & ID pendaftaran')
+          .addStringOption((o) => o.setName('turnamen').setDescription('Pilih turnamen').setAutocomplete(true).setRequired(true))
+      )
+      .addSubcommand((sub) =>
+        sub
+          .setName('approve')
+          .setDescription('Setujui pendaftaran peserta/tim')
+          .addIntegerOption((o) => o.setName('id').setDescription('ID Pendaftaran (cek di /turnamen peserta)').setRequired(true))
+      )
+      .addSubcommand((sub) =>
+        sub
+          .setName('reject')
+          .setDescription('Tolak pendaftaran peserta/tim')
+          .addIntegerOption((o) => o.setName('id').setDescription('ID Pendaftaran').setRequired(true))
+          .addStringOption((o) => o.setName('alasan').setDescription('Alasan penolakan').setRequired(true))
+      ),
   ].map((c) => c.toJSON());
 
   const rest = new REST({ version: '10' }).setToken(config.discordToken);
@@ -713,16 +790,27 @@ discordClient.on(Events.InteractionCreate, async (interaction: Interaction) => {
       return;
     }
 
-    // 0c. Autocomplete (/daftar)
-    if (interaction.isAutocomplete() && interaction.commandName === 'daftar') {
-      await handleTournamentDaftarAutocomplete(interaction);
-      return;
+    // 0c. Autocomplete (/daftar & /turnamen)
+    if (interaction.isAutocomplete()) {
+      if (interaction.commandName === 'daftar') {
+        await handleTournamentDaftarAutocomplete(interaction);
+        return;
+      }
+      if (interaction.commandName === 'turnamen') {
+        await handleTournamentAdminAutocomplete(interaction);
+        return;
+      }
     }
 
     // 1. Slash Commands
     if (interaction.isChatInputCommand()) {
       if (interaction.commandName === 'daftar') {
         await handleTournamentDaftarCommand(interaction);
+        return;
+      }
+
+      if (interaction.commandName === 'turnamen') {
+        await handleTournamentAdminCommand(interaction);
         return;
       }
 
