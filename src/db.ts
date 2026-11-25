@@ -1599,6 +1599,7 @@ export function listAnonMessages(sessionId: number, limit = 150): AnonMessage[] 
 // ---- Tournaments & Registrations ----
 
 const defaultTournamentNotif: TournamentNotifSettings = {
+  reviewChannelId: '',
   announceChannelId: '',
   sendDm: true,
   approveMessage:
@@ -1624,6 +1625,10 @@ export function saveTournamentNotifSettings(
 ): TournamentNotifSettings {
   const current = getTournamentNotifSettings();
   const next: TournamentNotifSettings = {
+    reviewChannelId:
+      updates.reviewChannelId !== undefined
+        ? updates.reviewChannelId.trim()
+        : current.reviewChannelId,
     announceChannelId:
       updates.announceChannelId !== undefined
         ? updates.announceChannelId.trim()

@@ -488,11 +488,18 @@ async function registerSlashCommands(): Promise<void> {
       ),
     new SlashCommandBuilder()
       .setName('turnamen-notif')
-      .setDescription('Atur notifikasi Approve/Reject pendaftaran turnamen (Khusus Admin)')
+      .setDescription('Atur channel review, pengumuman Approve, & DM turnamen (Khusus Admin)')
+      .addChannelOption((opt) =>
+        opt
+          .setName('channel_review')
+          .setDescription('Channel khusus rekapan pendaftar baru (berisi tombol Approve/Reject)')
+          .addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement)
+          .setRequired(false)
+      )
       .addChannelOption((opt) =>
         opt
           .setName('channel')
-          .setDescription('Channel tujuan pengumuman tim/peserta yang di-Approve')
+          .setDescription('Channel pengumuman publik untuk tim/peserta yang sudah di-Approve')
           .addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement)
           .setRequired(false)
       )

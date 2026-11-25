@@ -235,3 +235,4 @@ tournamentsRouter.patch('/registrations/:regId', async (req: AuthenticatedReques
 
   res.json({ registration: updated, tournament: getTournamentById(trn.id), effects });
 });
+

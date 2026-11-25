@@ -239,6 +239,7 @@ export async function handleTournamentNotifCommand(
     return;
   }
 
+  const reviewChannel = interaction.options.getChannel('channel_review');
   const channel = interaction.options.getChannel('channel');
   const clearChannel = interaction.options.getBoolean('matikan_channel');
   const sendDm = interaction.options.getBoolean('kirim_dm');
@@ -246,6 +247,7 @@ export async function handleTournamentNotifCommand(
   const rejectMsg = interaction.options.getString('pesan_reject');
 
   const updates: Partial<ReturnType<typeof getTournamentNotifSettings>> = {};
+  if (reviewChannel) updates.reviewChannelId = reviewChannel.id;
   if (clearChannel) updates.announceChannelId = '';
   else if (channel) updates.announceChannelId = channel.id;
   if (sendDm !== null) updates.sendDm = sendDm;
@@ -255,11 +257,20 @@ export async function handleTournamentNotifCommand(
   const saved = saveTournamentNotifSettings(updates);
 
   const embed = new EmbedBuilder()
-    .setTitle('⚙️ Pengaturan Notifikasi Approve Turnamen')
+    .setTitle('⚙️ Pengaturan Notifikasi Turnamen')
     .setColor(0x6366f1)
     .addFields(
       {
-        name: '📢 Channel Notif Approve',
+        name: '📥 Channel Review / Rekapan (Tombol Approve)',
+        value: saved.reviewChannelId
+          ? `<#${saved.reviewChannelId}>`
+          : config.notifChannelId
+          ? `<#${config.notifChannelId}> *(default NOTIF_CHANNEL_ID)*`
+          : '*Belum diatur*',
+        inline: false,
+      },
+      {
+        name: '📢 Channel Pengumuman Approve',
         value: saved.announceChannelId ? `<#${saved.announceChannelId}>` : '*Tidak diatur (nonaktif)*',
         inline: true,
       },
@@ -798,10 +809,12 @@ export async function handleTournamentInteraction(
       body: `${reg.team_name} (Perwakilan: ${interaction.user.username})`,
     });
 
-    // Send to #humas-notif with 1-click Approve/Reject buttons if configured
-    if (config.notifChannelId) {
+    // Send to dedicated reviewChannelId (or fallback to NOTIF_CHANNEL_ID) with 1-click Approve/Reject buttons
+    const notifCfg = getTournamentNotifSettings();
+    const targetReviewChannelId = notifCfg.reviewChannelId || config.notifChannelId;
+    if (targetReviewChannelId) {
       try {
-        const ch = await interaction.client.channels.fetch(config.notifChannelId);
+        const ch = await interaction.client.channels.fetch(targetReviewChannelId);
         if (ch && ch.isTextBased() && 'send' in ch) {
           const notifEmbed = new EmbedBuilder()
             .setTitle(`🏆 Pendaftar Turnamen Baru — ${trn.title}`)

@@ -281,6 +281,7 @@ export interface AnonMessage {
 export type TournamentMode = 'team' | 'solo';
 
 export interface TournamentNotifSettings {
+  reviewChannelId: string;
   announceChannelId: string;
   sendDm: boolean;
   approveMessage: string;

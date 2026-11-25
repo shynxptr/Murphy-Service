@@ -192,12 +192,16 @@ export function TournamentsView({ user, onOpenChat }: Props) {
         <div className="p-3.5 rounded-xl bg-slate-900 border border-slate-800 flex flex-wrap items-center justify-between gap-2 text-xs">
           <div className="text-slate-300 space-y-0.5">
             <div>
-              <strong className="text-white">Notif Approve Aktif:</strong>{' '}
-              DM Kapten: <span className="text-emerald-400">{notifSettings.sendDm ? 'ON' : 'OFF'}</span> •
-              Channel Pengumuman:{' '}
+              <strong className="text-white">Notif Turnamen:</strong>{' '}
+              Review/Approve:{' '}
+              <span className="text-amber-300 font-mono">
+                {notifSettings.reviewChannelId || 'Default NOTIF_CHANNEL'}
+              </span>{' '}
+              • Pengumuman:{' '}
               <span className="text-indigo-300 font-mono">
-                {notifSettings.announceChannelId || 'Belum diatur'}
-              </span>
+                {notifSettings.announceChannelId || 'Off'}
+              </span>{' '}
+              • DM Kapten: <span className="text-emerald-400">{notifSettings.sendDm ? 'ON' : 'OFF'}</span>
             </div>
             <div className="text-[11px] text-slate-500">
               Ubah kapan saja langsung dari Discord dengan command <code>/turnamen-notif</code>.
@@ -610,3 +614,4 @@ export function TournamentsView({ user, onOpenChat }: Props) {
     </div>
   );
 }
+
