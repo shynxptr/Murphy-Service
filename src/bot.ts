@@ -58,6 +58,12 @@ import {
   handleCustomRoleInteraction,
   handleCustomRolePrefixCommand,
 } from './customRole.js';
+import {
+  compressImageBuffer,
+  downloadImageBuffer,
+  formatBytes,
+  removeBackgroundBuffer,
+} from './imageTools.js';
 import type { Conversation, MessageAttachment } from './types.js';
 
 export const discordClient = new Client({
@@ -434,6 +440,44 @@ async function registerSlashCommands(): Promise<void> {
     new SlashCommandBuilder()
       .setName('anonchat')
       .setDescription('Mulai chat anonim 2 arah dengan Admin (curhat/aduan, identitas 100% dirahasiakan)'),
+    new SlashCommandBuilder()
+      .setName('removebg')
+      .setDescription('Hapus background gambar & kompres otomatis ≤ 256 KB PNG (siap untuk Role Icon)')
+      .addAttachmentOption((opt) =>
+        opt.setName('gambar').setDescription('Upload gambar yang ingin dihapus background-nya').setRequired(true)
+      )
+      .addIntegerOption((opt) =>
+        opt
+          .setName('toleransi')
+          .setDescription('Sensitivitas hapus background lokal (10–90, default: 42)')
+          .setMinValue(10)
+          .setMaxValue(90)
+          .setRequired(false)
+      ),
+    new SlashCommandBuilder()
+      .setName('compress')
+      .setDescription('Kompres & ubah format gambar ke PNG/JPG ≤ 256 KB (siap untuk Role Icon Discord)')
+      .addAttachmentOption((opt) =>
+        opt.setName('gambar').setDescription('Upload gambar yang ingin dikompres').setRequired(true)
+      )
+      .addStringOption((opt) =>
+        opt
+          .setName('format')
+          .setDescription('Format hasil (default: PNG)')
+          .setRequired(false)
+          .addChoices(
+            { name: 'PNG (Transparan)', value: 'png' },
+            { name: 'JPG (Ukuran Lebih Kecil)', value: 'jpeg' }
+          )
+      )
+      .addIntegerOption((opt) =>
+        opt
+          .setName('max_kb')
+          .setDescription('Target batas ukuran maksimal dalam KB (default: 256 KB)')
+          .setMinValue(32)
+          .setMaxValue(1024)
+          .setRequired(false)
+      ),
   ].map((c) => c.toJSON());
 
   const rest = new REST({ version: '10' }).setToken(config.discordToken);
@@ -616,6 +660,70 @@ discordClient.on(Events.InteractionCreate, async (interaction: Interaction) => {
 
     // 1. Slash Commands
     if (interaction.isChatInputCommand()) {
+      if (interaction.commandName === 'removebg') {
+        await interaction.deferReply();
+        const att = interaction.options.getAttachment('gambar', true);
+        const tolerance = interaction.options.getInteger('toleransi') ?? 42;
+        try {
+          const rawBuf = await downloadImageBuffer(att.url, 10);
+          const result = await removeBackgroundBuffer(rawBuf, {
+            maxBytes: 256 * 1024,
+            maxDimension: 512,
+            tolerance,
+          });
+          const file = new AttachmentBuilder(result.buffer, { name: 'nobg-icon.png' });
+          await interaction.editReply({
+            embeds: [
+              new EmbedBuilder()
+                .setColor(0x10b981)
+                .setTitle('✂️ Background Berhasil Dihapus!')
+                .setDescription(
+                  `📦 **Ukuran:** ${formatBytes(result.originalBytes)} → **${formatBytes(result.finalBytes)}** (${result.width}×${result.height}px PNG)\n🛠️ **Metode:** ${result.method === 'remove.bg' ? 'AI Remove.bg' : `Lokal (toleransi: ${tolerance})`}\n\n💡 Siap langsung dipakai sebagai Role Icon Discord (≤ 256 KB)!`
+                ),
+            ],
+            files: [file],
+          });
+        } catch (err: unknown) {
+          await interaction.editReply(
+            `❌ Gagal menghapus background: ${err instanceof Error ? err.message : 'Error tidak diketahui'}`
+          );
+        }
+        return;
+      }
+
+      if (interaction.commandName === 'compress') {
+        await interaction.deferReply();
+        const att = interaction.options.getAttachment('gambar', true);
+        const format = (interaction.options.getString('format') as 'png' | 'jpeg' | null) || 'png';
+        const maxKb = interaction.options.getInteger('max_kb') ?? 256;
+        try {
+          const rawBuf = await downloadImageBuffer(att.url, 10);
+          const result = await compressImageBuffer(rawBuf, {
+            maxBytes: maxKb * 1024,
+            maxDimension: 512,
+            preferFormat: format,
+          });
+          const ext = result.format === 'jpeg' ? 'jpg' : 'png';
+          const file = new AttachmentBuilder(result.buffer, { name: `compressed.${ext}` });
+          await interaction.editReply({
+            embeds: [
+              new EmbedBuilder()
+                .setColor(0x6366f1)
+                .setTitle('📦 Gambar Berhasil Dikompres!')
+                .setDescription(
+                  `📉 **Ukuran:** ${formatBytes(result.originalBytes)} → **${formatBytes(result.finalBytes)}** (target ≤ ${maxKb} KB)\n🖼️ **Format & Dimensi:** ${result.format.toUpperCase()} • ${result.width}×${result.height}px\n\n💡 Sudah memenuhi syarat Discord Role Icon (≤ 256 KB, JPG/PNG)!`
+                ),
+            ],
+            files: [file],
+          });
+        } catch (err: unknown) {
+          await interaction.editReply(
+            `❌ Gagal mengompres gambar: ${err instanceof Error ? err.message : 'Error tidak diketahui'}`
+          );
+        }
+        return;
+      }
+
       if (interaction.commandName === 'anonchat') {
         const existing = getActiveAnonSessionByUserId(interaction.user.id);
         if (existing) {

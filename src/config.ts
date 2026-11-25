@@ -54,6 +54,7 @@ export const config = {
   jwtSecret: process.env.JWT_SECRET || 'humas-dev-secret-change-in-production',
   dbPath: path.resolve(process.env.DB_PATH || './data/humas.db'),
   uploadsDir: path.resolve(process.env.UPLOADS_DIR || './uploads'),
+  removeBgApiKey: process.env.REMOVE_BG_API_KEY || '',
   adminAccounts: parseAdminAccounts(process.env.ADMIN_ACCOUNTS),
 };
 

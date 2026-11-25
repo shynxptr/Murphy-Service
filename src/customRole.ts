@@ -22,6 +22,14 @@ import {
   getCustomRoleSettings,
   upsertCustomRole,
 } from './db.js';
+import {
+  compressImageBuffer,
+  DISCORD_ROLE_ICON_MAX_BYTES,
+  downloadImageBuffer,
+  formatBytes,
+  removeBackgroundBuffer,
+  type ProcessedImageResult,
+} from './imageTools.js';
 import type { CustomRoleRecord } from './types.js';
 
 export function normalizeHexColor(input: string | undefined | null): string | null {
@@ -136,27 +144,83 @@ export async function positionRoleBelowBot(guild: Guild, role: Role): Promise<Ro
 export async function setRoleIconFromUrl(
   role: Role,
   imageUrl: string,
-  reason = 'Custom role icon update'
-): Promise<{ appliedToDiscordRole: boolean; imageUrl: string }> {
-  const res = await fetch(imageUrl);
-  if (!res.ok) throw new Error('Gagal mengunduh gambar dari URL tersebut.');
-  const contentType = res.headers.get('content-type') || '';
-  if (contentType && !contentType.startsWith('image/')) {
-    throw new Error('URL tersebut bukan file gambar yang valid (PNG/JPG/WEBP/GIF).');
-  }
-  const buffer = Buffer.from(await res.arrayBuffer());
-  if (buffer.length > 4 * 1024 * 1024) {
-    throw new Error('Ukuran gambar terlalu besar (maksimal 4 MB).');
-  }
+  options?: { removeBg?: boolean; reason?: string }
+): Promise<{
+  appliedToDiscordRole: boolean;
+  warningReason: string | null;
+  imageUrl: string;
+  processed: ProcessedImageResult;
+}> {
+  const rawBuffer = await downloadImageBuffer(imageUrl, 10);
+  const processed = options?.removeBg
+    ? await removeBackgroundBuffer(rawBuffer, {
+        maxBytes: DISCORD_ROLE_ICON_MAX_BYTES,
+        maxDimension: 256,
+      })
+    : await compressImageBuffer(rawBuffer, {
+        maxBytes: DISCORD_ROLE_ICON_MAX_BYTES,
+        maxDimension: 256,
+        preferFormat: 'png',
+      });
 
   let appliedToDiscordRole = false;
-  try {
-    await role.setIcon(buffer, reason);
-    appliedToDiscordRole = true;
-  } catch {
-    // Server might not have Boost Level 2 yet; keep thumbnail in info card
+  let warningReason: string | null = null;
+
+  const guild = role.guild;
+  const botMember = guild.members.me;
+
+  if (!guild.features.includes('ROLE_ICONS') && guild.premiumTier < 2) {
+    warningReason =
+      'Server belum mencapai **Boost Level 2** (syarat resmi Discord untuk fitur Role Icon).';
+  } else if (
+    botMember &&
+    (!botMember.permissions.has(PermissionFlagsBits.ManageRoles) ||
+      role.position >= botMember.roles.highest.position)
+  ) {
+    warningReason =
+      'Bot tidak memiliki izin **Manage Roles** atau posisi Custom Role berada di atas/setara role tertinggi Bot.';
+  } else {
+    try {
+      await role.setIcon(processed.buffer, options?.reason || 'Custom role icon update');
+      appliedToDiscordRole = true;
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Error tidak diketahui';
+      if (/boost|tier|feature|role_icons/i.test(msg)) {
+        warningReason =
+          'Server belum mendukung fitur **Role Icon** (membutuhkan minimal **Boost Level 2**).';
+      } else if (/size|256|large|asset/i.test(msg)) {
+        warningReason =
+          'Discord menolak ukuran/format gambar (aturan Discord: maks **256 KB**, format **JPG/PNG**).';
+      } else if (/missing permissions|50013/i.test(msg)) {
+        warningReason =
+          'Bot tidak punya izin mengedit role ini (pastikan posisi role Bot di atas Custom Role).';
+      } else {
+        warningReason = `Discord menolak pemasangan icon: ${msg}`;
+      }
+    }
   }
-  return { appliedToDiscordRole, imageUrl };
+
+  return { appliedToDiscordRole, warningReason, imageUrl, processed };
+}
+
+function buildIconResultDescription(
+  role: Role,
+  res: {
+    appliedToDiscordRole: boolean;
+    warningReason: string | null;
+    processed: ProcessedImageResult;
+  },
+  removeBg: boolean
+): string {
+  const sizeInfo = `📦 Kompresi otomatis: **${formatBytes(res.processed.originalBytes)} → ${formatBytes(res.processed.finalBytes)}** (${res.processed.format.toUpperCase()}, ${res.processed.width}×${res.processed.height}px)`;
+  const bgInfo = removeBg
+    ? `\n✂️ Remove BG: **Aktif** (${res.processed.method === 'remove.bg' ? 'AI Remove.bg' : 'Lokal'})`
+    : '';
+
+  if (res.appliedToDiscordRole) {
+    return `${role} : **Successfully** changed the role icon!\n${sizeInfo}${bgInfo}`;
+  }
+  return `⚠️ Icon **tidak dapat dipasang langsung ke role Discord**.\n**Alasan:** ${res.warningReason}\n\n${sizeInfo}${bgInfo}\n*(Gambar tetap disimpan sebagai thumbnail pada kartu info role.)*`;
 }
 
 export function resolveIconInputUrl(input: string | undefined | null): string | null {
@@ -338,6 +402,7 @@ export async function buildCustomRoleInfoPayload(
 
   const row2 = new ActionRowBuilder<ButtonBuilder>().addComponents(
     new ButtonBuilder().setCustomId(`hcr_btn_icon_${ownerId}`).setLabel('Icon').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId(`hcr_btn_icon_nobg_${ownerId}`).setLabel('Icon (No BG)').setEmoji('✂️').setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId(`hcr_btn_banner_${ownerId}`).setLabel('Banner').setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId(`hcr_btn_desc_${ownerId}`).setLabel('Description').setStyle(ButtonStyle.Secondary),
     new ButtonBuilder()
@@ -689,17 +754,18 @@ export async function handleCustomRoleInteraction(interaction: Interaction): Pro
     return true;
   }
 
-  // ---- ICON ----
-  if (interaction.isButton() && action === 'btn_icon') {
+  // ---- ICON & ICON (NO BG) ----
+  if (interaction.isButton() && (action === 'btn_icon' || action === 'btn_icon_nobg')) {
+    const isNoBg = action === 'btn_icon_nobg';
     const modal = new ModalBuilder()
-      .setCustomId(`hcr_modal_icon_${ownerId}`)
-      .setTitle('Change Custom Role Icon')
+      .setCustomId(`${isNoBg ? 'hcr_modal_icon_nobg' : 'hcr_modal_icon'}_${ownerId}`)
+      .setTitle(isNoBg ? 'Role Icon (Auto Remove BG + ≤256KB)' : 'Role Icon (Auto Compress ≤256KB)')
       .addComponents(
         new ActionRowBuilder<TextInputBuilder>().addComponents(
           new TextInputBuilder()
             .setCustomId('icon_input')
             .setLabel('URL Gambar / Emoji (atau "remove")')
-            .setPlaceholder('https://.../icon.png, <:nama:id>, atau !micon + gambar')
+            .setPlaceholder('https://.../icon.png, <:nama:id>, atau !micon nobg + gambar')
             .setValue(record.icon_url || '')
             .setRequired(true)
             .setStyle(TextInputStyle.Short)
@@ -709,7 +775,8 @@ export async function handleCustomRoleInteraction(interaction: Interaction): Pro
     return true;
   }
 
-  if (interaction.isModalSubmit() && action === 'modal_icon') {
+  if (interaction.isModalSubmit() && (action === 'modal_icon' || action === 'modal_icon_nobg')) {
+    const isNoBg = action === 'modal_icon_nobg';
     await interaction.deferUpdate();
     const rawInput = interaction.fields.getTextInputValue('icon_input').trim();
     if (/^remove|none|delete|clear|off$/i.test(rawInput)) {
@@ -722,19 +789,32 @@ export async function handleCustomRoleInteraction(interaction: Interaction): Pro
     const resolvedUrl = resolveIconInputUrl(rawInput);
     if (!resolvedUrl) {
       await interaction.followUp({
-        content: '❌ Masukkan URL gambar (`https://...`), custom emoji (`<:nama:id>`), atau kirim `!micon` sambil upload gambar!',
+        content: '❌ Masukkan URL gambar (`https://...`), custom emoji (`<:nama:id>`), atau kirim `!micon` / `!micon nobg` sambil upload gambar!',
         ephemeral: true,
       });
       return true;
     }
     try {
-      await setRoleIconFromUrl(role, resolvedUrl);
+      const res = await setRoleIconFromUrl(role, resolvedUrl, {
+        removeBg: isNoBg,
+        reason: `Diubah oleh ${interaction.user.tag}`,
+      });
       upsertCustomRole({ discord_user_id: ownerId, icon_url: resolvedUrl });
-      appendCustomRoleHistory(ownerId, 'Changed role icon');
+      appendCustomRoleHistory(ownerId, isNoBg ? 'Changed role icon (Remove BG)' : 'Changed role icon');
       await interaction.editReply(await buildCustomRoleInfoPayload(guild, ownerId, 'edit'));
+      await interaction.followUp({
+        embeds: [
+          new EmbedBuilder()
+            .setColor(res.appliedToDiscordRole ? 0x2ecc71 : 0xf59e0b)
+            .setTitle(res.appliedToDiscordRole ? '✅ Custom role updated' : '⚠️ Role Icon Tidak Dapat Dipasang')
+            .setDescription(buildIconResultDescription(role, res, isNoBg))
+            .setThumbnail(resolvedUrl),
+        ],
+        ephemeral: true,
+      });
     } catch (err: unknown) {
       await interaction.followUp({
-        content: `❌ ${err instanceof Error ? err.message : 'Gagal mengubah icon'}`,
+        content: `❌ Gagal memproses icon: ${err instanceof Error ? err.message : 'Error tidak diketahui'}`,
         ephemeral: true,
       });
     }
@@ -1079,28 +1159,39 @@ export async function handleCustomRolePrefixCommand(message: Message): Promise<b
 
   if (cmd === 'micon') {
     const attachment = message.attachments.first();
-    const arg = parts[0]?.trim();
-    const targetUrl = attachment?.url || resolveIconInputUrl(arg);
+    const firstArg = parts[0]?.trim().toLowerCase() || '';
+    const wantsNoBg = ['nobg', 'removebg', 'rmbg', 'bg'].includes(firstArg);
+    const urlArg = wantsNoBg ? parts[1]?.trim() : parts[0]?.trim();
+    const targetUrl = attachment?.url || resolveIconInputUrl(urlArg);
 
     if (targetUrl) {
       try {
-        await setRoleIconFromUrl(role, targetUrl, `Diubah oleh ${message.author.tag}`);
+        const res = await setRoleIconFromUrl(role, targetUrl, {
+          removeBg: wantsNoBg,
+          reason: `Diubah oleh ${message.author.tag}`,
+        });
         upsertCustomRole({ discord_user_id: userId, icon_url: targetUrl });
-        appendCustomRoleHistory(userId, 'Changed role icon');
+        appendCustomRoleHistory(userId, wantsNoBg ? 'Changed role icon (Remove BG)' : 'Changed role icon');
         await message.reply({
-          embeds: [buildRoleUpdatedEmbed(`${role} : **Successfully** changed the role icon`, targetUrl)],
+          embeds: [
+            new EmbedBuilder()
+              .setColor(res.appliedToDiscordRole ? 0x2ecc71 : 0xf59e0b)
+              .setTitle(res.appliedToDiscordRole ? '✅ Custom role updated' : '⚠️ Role Icon Tidak Dapat Dipasang')
+              .setDescription(buildIconResultDescription(role, res, wantsNoBg))
+              .setThumbnail(targetUrl),
+          ],
           allowedMentions: { repliedUser: false },
         });
       } catch (err: unknown) {
         await message.reply({
-          content: `❌ ${err instanceof Error ? err.message : 'Gagal memasang icon'}`,
+          content: `❌ Gagal memproses icon: ${err instanceof Error ? err.message : 'Error tidak diketahui'}`,
           allowedMentions: { repliedUser: false },
         });
       }
       return true;
     }
 
-    if (!arg || /^remove|none|delete|clear|off$/i.test(arg)) {
+    if (!wantsNoBg && (!urlArg || /^remove|none|delete|clear|off$/i.test(urlArg))) {
       await role.setIcon(null).catch(() => {});
       upsertCustomRole({ discord_user_id: userId, icon_url: null });
       appendCustomRoleHistory(userId, 'Removed role icon');
@@ -1112,7 +1203,8 @@ export async function handleCustomRolePrefixCommand(message: Message): Promise<b
     }
 
     await message.reply({
-      content: '💡 Kirim `!micon` sambil upload gambar, atau `!micon <emoji/url>`!',
+      content:
+        '💡 Kirim `!micon` atau `!micon nobg` sambil **upload gambar** (otomatis dikompres ke PNG/JPG ≤ 256 KB), atau `!micon <emoji/url>`!',
       allowedMentions: { repliedUser: false },
     });
     return true;
